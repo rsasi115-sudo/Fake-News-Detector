@@ -33,6 +33,7 @@ const mockAnalysis = {
     matched: [
       { name: "Associated Press", status: "not_found" as const },
       { name: "Reuters", status: "not_found" as const },
+      { name: "Times of India", status: "not_found" as const },
       { name: "WHO Official Sources", status: "not_found" as const },
     ],
     missing: [

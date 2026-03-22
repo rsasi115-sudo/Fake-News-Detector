@@ -5,14 +5,21 @@ import { useState, useEffect, useRef } from "react";
 import AnalyzeOptionsPopover from "./AnalyzeOptionsPopover";
 import VerificationProgress from "./VerificationProgress";
 import FullReportSection from "./FullReportSection";
+import LogPanel from "./LogPanel";
 import { useNewsAnalysis } from "@/hooks/useNewsAnalysis";
+import { useBackendLogs } from "@/hooks/useBackendLogs";
 import { useSearchHistory } from "@/contexts/SearchHistoryContext";
 import type { AnalysisResult } from "@/hooks/useNewsAnalysis";
 
 const HeroSection = () => {
   const [inputValue, setInputValue] = useState("");
   const [currentQuery, setCurrentQuery] = useState("");
-  const { isAnalyzing, steps, currentStep, result, analyze, reset, setResult } = useNewsAnalysis();
+  const { isAnalyzing, steps, currentStep, progressPercent, result, streamId, analyze, reset, setResult } = useNewsAnalysis();
+  const { logs, isStreaming } = useBackendLogs({
+    analysisId: streamId || "",
+    enabled: !!streamId && isAnalyzing,
+    maxLogs: 500,
+  });
   const { selectedHistoryItem, setSelectedHistoryItem, addToHistory, updateHistoryResult, newAnalysisRequested, setNewAnalysisRequested } = useSearchHistory();
   const currentHistoryIdRef = useRef<string | null>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
@@ -210,7 +217,7 @@ const HeroSection = () => {
                         <input
                           ref={inputRef}
                           type="text"
-                          placeholder="Paste a news article URL or enter text to analyze..."
+                          placeholder="Paste a news URL or enter text to analyze..."
                           value={inputValue}
                           onChange={(e) => setInputValue(e.target.value)}
                           onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
@@ -235,7 +242,7 @@ const HeroSection = () => {
                     {/* Quick analysis time indicator */}
                     <div className="flex items-center justify-center gap-2 mt-3 text-xs text-muted-foreground">
                       <Clock className="w-3 h-3" />
-                      <span>Average analysis time: 30-45 seconds</span>
+                      <span>Average analysis time: about 40 seconds</span>
                     </div>
                   </div>
                 </div>
@@ -278,7 +285,7 @@ const HeroSection = () => {
                 {[
                   { value: "99.2%", label: "Detection Accuracy" },
                   { value: "10M+", label: "Articles Analyzed" },
-                  { value: "<45s", label: "Analysis Time" },
+                  { value: "<40s", label: "Analysis Time" },
                 ].map((stat) => (
                   <div key={stat.label} className="text-center">
                     <div className="text-2xl md:text-3xl font-display font-bold text-white">
@@ -318,7 +325,25 @@ const HeroSection = () => {
       <AnimatePresence>
         {isAnalyzing && steps.length > 0 && (
           <div className="relative z-10 container mx-auto px-4">
-            <VerificationProgress steps={steps} currentStep={currentStep} />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Left: Verification Progress */}
+              <div>
+                <VerificationProgress steps={steps} currentStep={currentStep} progressPercent={progressPercent} />
+              </div>
+              
+              {/* Right: Live Logs Panel */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+              >
+                <LogPanel
+                  logs={logs}
+                  isStreaming={isStreaming}
+                  onClear={() => {}}
+                />
+              </motion.div>
+            </div>
           </div>
         )}
       </AnimatePresence>

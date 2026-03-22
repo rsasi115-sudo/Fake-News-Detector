@@ -42,7 +42,6 @@ class AnalysisResult(models.Model):
         TRUE = "true", "True"
         FALSE = "false", "False"
         MISLEADING = "misleading", "Misleading"
-        UNKNOWN = "unknown", "Unknown"
 
     request = models.OneToOneField(
         AnalysisRequest,

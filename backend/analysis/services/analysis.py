@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from analysis.models import AnalysisRequest, AnalysisResult, SourceCheck
 from analysis.services.pipeline import PipelineError, run_pipeline
+from analysis.services.scoring import _score_to_verdict
 
 if TYPE_CHECKING:
     from accounts.models import User
@@ -28,11 +29,16 @@ def _persist_pipeline_result(request: AnalysisRequest, pipe_ctx: dict) -> Analys
     # Delete any existing result so rerun is clean
     AnalysisResult.objects.filter(request=request).delete()
 
+    # Embed source verification data in metrics for API exposure
+    metrics = pipe_ctx["metrics"]
+    if "source_verification" in pipe_ctx:
+        metrics["source_verification"] = pipe_ctx["source_verification"]
+
     result = AnalysisResult.objects.create(
         request=request,
         verdict=pipe_ctx["verdict"],
         credibility_score=pipe_ctx["credibility_score"],
-        metrics=pipe_ctx["metrics"],
+        metrics=metrics,
         llm_summary=pipe_ctx["summary"],
         # Phase 6 — explainable AI
         explainable_ai=pipe_ctx.get("explainable_ai", {}),
@@ -51,8 +57,12 @@ def _persist_pipeline_result(request: AnalysisRequest, pipe_ctx: dict) -> Analys
         )
 
     logger.info(
-        "Pipeline result persisted: request=%s verdict=%s score=%s elapsed=%dms",
+        "Pipeline result persisted: request=%s verdict=%s score=%s "
+        "llm_status=%s sv_status=%s sv_count=%d elapsed=%dms",
         request.pk, pipe_ctx["verdict"], pipe_ctx["credibility_score"],
+        pipe_ctx.get("llm_status", "?"),
+        pipe_ctx.get("source_verification", {}).get("verification_status", "?"),
+        pipe_ctx.get("source_verification", {}).get("source_count", 0),
         pipe_ctx.get("pipeline_elapsed_ms", 0),
     )
     return result
@@ -60,7 +70,7 @@ def _persist_pipeline_result(request: AnalysisRequest, pipe_ctx: dict) -> Analys
 
 # ── public API ───────────────────────────────────────────────────────────
 
-def submit_analysis(*, user: "User", input_type: str, input_value: str) -> AnalysisRequest:
+def submit_analysis(*, user: "User", input_type: str, input_value: str, stream_id: str | None = None) -> AnalysisRequest:
     """
     Create an AnalysisRequest and run the verification pipeline.
 
@@ -74,7 +84,7 @@ def submit_analysis(*, user: "User", input_type: str, input_value: str) -> Analy
     )
 
     try:
-        pipe_ctx = run_pipeline(input_type, input_value)
+        pipe_ctx = run_pipeline(input_type, input_value, stream_id=stream_id)
     except PipelineError as exc:
         logger.error("Pipeline error for request %s: %s", request.pk, exc)
         # Store a fallback result so the request is not orphaned
@@ -89,7 +99,7 @@ def submit_analysis(*, user: "User", input_type: str, input_value: str) -> Analy
     return request
 
 
-def rerun_analysis(request: AnalysisRequest) -> AnalysisRequest:
+def rerun_analysis(request: AnalysisRequest, stream_id: str | None = None) -> AnalysisRequest:
     """
     Re-run the pipeline for an existing request.
 
@@ -97,7 +107,7 @@ def rerun_analysis(request: AnalysisRequest) -> AnalysisRequest:
     """
 
     try:
-        pipe_ctx = run_pipeline(request.input_type, request.input_value)
+        pipe_ctx = run_pipeline(request.input_type, request.input_value, stream_id=stream_id)
     except PipelineError as exc:
         logger.error("Pipeline error during rerun for request %s: %s", request.pk, exc)
         _persist_fallback_result(request, str(exc))
@@ -120,12 +130,25 @@ def _persist_fallback_result(request: AnalysisRequest, error_detail: str) -> Non
     so the request is never left without a result.
     """
     AnalysisResult.objects.filter(request=request).delete()
+    _fallback_score = 0
     AnalysisResult.objects.create(
         request=request,
-        verdict="unknown",
-        credibility_score=0,
-        metrics={"error": error_detail, "pipeline_failed": True},
-        llm_summary=f"Analysis could not be completed: {error_detail}",
+        verdict=_score_to_verdict(_fallback_score),
+        credibility_score=_fallback_score,
+        metrics={
+            "error": error_detail,
+            "pipeline_failed": True,
+            "source_verification": {
+                "verification_enabled": False,
+                "verification_status": "not_available",
+                "matched_sources": [],
+                "per_source_statuses": [],
+                "contradiction_count": 0,
+                "source_count": 0,
+                "verification_notes": "Trusted-source verification was unavailable during this run.",
+            },
+        },
+        llm_summary="Analysis completed with partial backend diagnostics; review source verification notes and rerun if needed.",
         explainable_ai={},
         llm_provider="ollama",
         llm_latency_ms=None,

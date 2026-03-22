@@ -7,17 +7,35 @@ Phase 5 tests use LLM_ENABLE=False so they run instantly.
 Phase 6 tests verify real Ollama integration and error handling.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from analysis.services.source_verifier import SourceVerificationResult
+
+# Mock source verification result used across pipeline tests to avoid real HTTP calls
+_MOCK_SV = SourceVerificationResult(
+    verification_enabled=True,
+    verification_status="unsupported",
+    matched_sources=[],
+    source_count=0,
+    verification_notes="Mocked for tests.",
+)
+
+_PATCH_VERIFY = patch(
+    "analysis.services.pipeline.verify_sources",
+    new=MagicMock(return_value=_MOCK_SV),
+)
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Phase 5 — Pipeline unit tests (LLM disabled for speed)
 # ══════════════════════════════════════════════════════════════════════════
 
+@_PATCH_VERIFY
 @override_settings(LLM_ENABLE=False)
 class PipelineTests(TestCase):
     """Verify the rule-based pipeline returns expected keys."""
@@ -28,7 +46,7 @@ class PipelineTests(TestCase):
         for key in ("verdict", "credibility_score", "summary", "metrics", "source_checks"):
             self.assertIn(key, ctx)
         self.assertIsInstance(ctx["credibility_score"], int)
-        self.assertIn(ctx["verdict"], ("true", "false", "misleading", "unknown"))
+        self.assertIn(ctx["verdict"], ("true", "false", "misleading"))
 
     def test_empty_input_raises(self):
         from analysis.services.pipeline import PipelineError, run_pipeline
@@ -41,10 +59,260 @@ class PipelineTests(TestCase):
             run_pipeline("text", "a" * 60_000)
 
 
+class TrustedSourceHandlingTests(TestCase):
+    @staticmethod
+    def _extraction_result(url: str, text: str, title: str = "Trusted source article"):
+        return SimpleNamespace(
+            extracted=True,
+            title=title,
+            text=text,
+            source_url=url,
+            extraction_step="step_1_primary",
+            meta_description="",
+        )
+
+    def test_deduplicate_sources_prefers_domain_match(self):
+        from analysis.services.source_verifier import _deduplicate_sources
+
+        items = [
+            {
+                "source_name": "Times of India",
+                "domain": "timesofindia.indiatimes.com",
+                "status": "matched",
+                "similarity_score": 0.72,
+                "note": "Times of India matched: covers the same event/topic.",
+                "is_domain_match": False,
+            },
+            {
+                "source_name": "Times of India",
+                "domain": "timesofindia.indiatimes.com",
+                "status": "matched",
+                "similarity_score": 1.0,
+                "note": "Times of India matched — submitted URL belongs to trusted source domain.",
+                "is_domain_match": True,
+            },
+        ]
+
+        deduped = _deduplicate_sources(items)
+
+        self.assertEqual(len(deduped), 1)
+        self.assertEqual(deduped[0]["source_name"], "Times of India")
+        self.assertTrue(deduped[0]["is_domain_match"])
+
+    @override_settings(LLM_ENABLE=False)
+    @patch("analysis.services.pipeline.verify_sources")
+    @patch("analysis.services.pipeline.extract_article")
+    def test_trusted_domain_url_usually_becomes_credible(self, mock_extract_article, mock_verify_sources):
+        from analysis.services.pipeline import run_pipeline
+
+        url = "https://timesofindia.indiatimes.com/india/example/articleshow/12345.cms"
+        text = (
+            "According to an official statement issued on 16 March 2026, city authorities confirmed the update. "
+            "The report includes quoted remarks, specific numbers, and location details."
+        )
+        mock_extract_article.return_value = self._extraction_result(url, text, "Authorities confirm update")
+        mock_verify_sources.return_value = SourceVerificationResult(
+            verification_enabled=True,
+            verification_status="partially_supported",
+            matched_sources=[
+                {
+                    "source_name": "Times of India",
+                    "domain": "timesofindia.indiatimes.com",
+                    "status": "matched",
+                    "similarity_score": 1.0,
+                    "matched_headline": "Authorities confirm update",
+                    "matched_entities": [],
+                    "note": "Times of India matched — submitted URL belongs to trusted source domain.",
+                    "is_domain_match": True,
+                }
+            ],
+            per_source_statuses=[
+                {"source_name": "BBC", "status": "not_matched", "note": "BBC not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Reuters", "status": "not_matched", "note": "Reuters not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "AP News", "status": "not_matched", "note": "AP News not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "The Guardian", "status": "not_matched", "note": "The Guardian not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Al Jazeera", "status": "not_matched", "note": "Al Jazeera not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Times of India", "status": "matched", "note": "Times of India matched — submitted URL belongs to trusted source domain.", "similarity_score": 1.0, "is_domain_match": True},
+            ],
+            source_count=1,
+            verification_notes="Times of India matched — submitted URL belongs to trusted source domain.",
+            contradiction_count=0,
+        )
+
+        ctx = run_pipeline("url", url)
+
+        self.assertEqual(ctx["source_verification"]["source_count"], 1)
+        self.assertEqual(len(ctx["source_verification"]["matched_sources"]), 1)
+        self.assertGreaterEqual(ctx["credibility_score"], 65)
+        self.assertEqual(ctx["verdict"], "true")
+        self.assertIn("Source verification: 1 trusted source match(es)", [item["reason"] for item in ctx["scoring_breakdown"]])
+
+    @override_settings(LLM_ENABLE=False)
+    @patch("analysis.services.pipeline.verify_sources")
+    @patch("analysis.services.pipeline.extract_article")
+    def test_bbc_domain_url_usually_becomes_credible(self, mock_extract_article, mock_verify_sources):
+        from analysis.services.pipeline import run_pipeline
+
+        url = "https://www.bbc.com/news/world-12345678"
+        text = (
+            "BBC reports that officials released documented updates and confirmed the timeline in a public briefing. "
+            "The article includes attributed quotes, dates, and numeric details."
+        )
+        mock_extract_article.return_value = self._extraction_result(url, text, "Officials confirm update in briefing")
+        mock_verify_sources.return_value = SourceVerificationResult(
+            verification_enabled=True,
+            verification_status="partially_supported",
+            matched_sources=[
+                {
+                    "source_name": "BBC",
+                    "domain": "bbc.com",
+                    "status": "matched",
+                    "similarity_score": 1.0,
+                    "matched_headline": "Officials confirm update in briefing",
+                    "matched_entities": [],
+                    "note": "BBC matched — submitted URL belongs to trusted source domain.",
+                    "is_domain_match": True,
+                }
+            ],
+            per_source_statuses=[
+                {"source_name": "BBC", "status": "matched", "note": "BBC matched — submitted URL belongs to trusted source domain.", "similarity_score": 1.0, "is_domain_match": True},
+                {"source_name": "Reuters", "status": "not_matched", "note": "Reuters not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "AP News", "status": "not_matched", "note": "AP News not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "The Guardian", "status": "not_matched", "note": "The Guardian not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Al Jazeera", "status": "not_matched", "note": "Al Jazeera not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Times of India", "status": "not_matched", "note": "Times of India not matched", "similarity_score": 0.0, "is_domain_match": False},
+            ],
+            source_count=1,
+            verification_notes="BBC matched — submitted URL belongs to trusted source domain.",
+            contradiction_count=0,
+        )
+
+        ctx = run_pipeline("url", url)
+
+        self.assertEqual(ctx["source_verification"]["source_count"], 1)
+        self.assertEqual(len(ctx["source_verification"]["matched_sources"]), 1)
+        self.assertGreaterEqual(ctx["credibility_score"], 65)
+        self.assertEqual(ctx["verdict"], "true")
+
+    @override_settings(LLM_ENABLE=False)
+    @patch("analysis.services.pipeline.verify_sources")
+    def test_non_trusted_source_without_matches_uses_content_only_score(self, mock_verify_sources):
+        from analysis.services.pipeline import run_pipeline
+
+        mock_verify_sources.return_value = SourceVerificationResult(
+            verification_enabled=True,
+            verification_status="unsupported",
+            matched_sources=[],
+            per_source_statuses=[],
+            source_count=0,
+            verification_notes="",
+            contradiction_count=0,
+        )
+
+        text = "Breaking rumor with no supporting details and no trusted-source match."
+        ctx = run_pipeline("text", text)
+
+        self.assertEqual(ctx["source_verification"]["source_count"], 0)
+        self.assertFalse(any(item["reason"].startswith("Source verification:") for item in ctx["scoring_breakdown"]))
+
+    @override_settings(LLM_ENABLE=False)
+    @patch("analysis.services.pipeline.verify_sources")
+    @patch("analysis.services.pipeline.extract_article")
+    def test_trusted_domain_with_strong_negative_signals_can_remain_misleading(self, mock_extract_article, mock_verify_sources):
+        from analysis.services.pipeline import run_pipeline
+
+        url = "https://timesofindia.indiatimes.com/india/example/articleshow/99999.cms"
+        text = (
+            "Shocking claim draws attention as experts discuss a miracle cure with limited evidence!!!! "
+            "The report uses dramatic language and says the result is always proven, never wrong, and guaranteed to change everything."
+        )
+        mock_extract_article.return_value = self._extraction_result(url, text, "Shocking miracle cure claim draws attention")
+        mock_verify_sources.return_value = SourceVerificationResult(
+            verification_enabled=True,
+            verification_status="partially_supported",
+            matched_sources=[
+                {
+                    "source_name": "Times of India",
+                    "domain": "timesofindia.indiatimes.com",
+                    "status": "matched",
+                    "similarity_score": 1.0,
+                    "matched_headline": "SHOCKING miracle cure revealed!!!",
+                    "matched_entities": [],
+                    "note": "Times of India matched — submitted URL belongs to trusted source domain.",
+                    "is_domain_match": True,
+                }
+            ],
+            per_source_statuses=[
+                {"source_name": "BBC", "status": "not_matched", "note": "BBC not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Reuters", "status": "not_matched", "note": "Reuters not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "AP News", "status": "not_matched", "note": "AP News not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "The Guardian", "status": "not_matched", "note": "The Guardian not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Al Jazeera", "status": "not_matched", "note": "Al Jazeera not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Times of India", "status": "matched", "note": "Times of India matched — submitted URL belongs to trusted source domain.", "similarity_score": 1.0, "is_domain_match": True},
+            ],
+            source_count=1,
+            verification_notes="Times of India matched — submitted URL belongs to trusted source domain.",
+            contradiction_count=0,
+        )
+
+        ctx = run_pipeline("url", url)
+
+        self.assertGreater(ctx["credibility_score"], 0)
+        self.assertLess(ctx["credibility_score"], 65)
+        self.assertEqual(ctx["verdict"], "misleading")
+
+    @override_settings(LLM_ENABLE=False)
+    @patch("analysis.services.pipeline.verify_sources")
+    @patch("analysis.services.pipeline.extract_article")
+    def test_trusted_domain_with_severe_negative_signals_can_be_fake(self, mock_extract_article, mock_verify_sources):
+        from analysis.services.pipeline import run_pipeline
+
+        url = "https://timesofindia.indiatimes.com/india/example/articleshow/77777.cms"
+        text = (
+            "SHOCKING miracle cure EXPOSED!!! Everyone must share this now!!! "
+            "Scientists absolutely proved a secret conspiracy and hidden causation without evidence!!! "
+            "I, I, I personally saw it and this is always true, never wrong, biggest reveal ever!!!"
+        )
+        mock_extract_article.return_value = self._extraction_result(url, text, "SHOCKING miracle cure EXPOSED!!!")
+        mock_verify_sources.return_value = SourceVerificationResult(
+            verification_enabled=True,
+            verification_status="partially_supported",
+            matched_sources=[
+                {
+                    "source_name": "Times of India",
+                    "domain": "timesofindia.indiatimes.com",
+                    "status": "matched",
+                    "similarity_score": 1.0,
+                    "matched_headline": "SHOCKING miracle cure EXPOSED!!!",
+                    "matched_entities": [],
+                    "note": "Times of India matched — submitted URL belongs to trusted source domain.",
+                    "is_domain_match": True,
+                }
+            ],
+            per_source_statuses=[
+                {"source_name": "BBC", "status": "not_matched", "note": "BBC not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Reuters", "status": "not_matched", "note": "Reuters not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "AP News", "status": "not_matched", "note": "AP News not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "The Guardian", "status": "not_matched", "note": "The Guardian not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Al Jazeera", "status": "not_matched", "note": "Al Jazeera not matched", "similarity_score": 0.0, "is_domain_match": False},
+                {"source_name": "Times of India", "status": "matched", "note": "Times of India matched — submitted URL belongs to trusted source domain.", "similarity_score": 1.0, "is_domain_match": True},
+            ],
+            source_count=1,
+            verification_notes="Times of India matched — submitted URL belongs to trusted source domain.",
+            contradiction_count=0,
+        )
+
+        ctx = run_pipeline("url", url)
+
+        self.assertLess(ctx["credibility_score"], 35)
+        self.assertEqual(ctx["verdict"], "false")
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  Phase 5 — API integration tests (LLM disabled for speed)
 # ══════════════════════════════════════════════════════════════════════════
 
+@_PATCH_VERIFY
 @override_settings(LLM_ENABLE=False)
 class SubmitAnalysisAPITests(TestCase):
     """POST /api/analysis/submit/ must return a full result."""
@@ -84,6 +352,7 @@ class SubmitAnalysisAPITests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+@_PATCH_VERIFY
 @override_settings(LLM_ENABLE=False)
 class HistoryAPITests(TestCase):
     """GET /api/history/ and /api/history/<id>/ must work."""
@@ -151,6 +420,7 @@ class PromptSanitisationTests(TestCase):
 #  Phase 6 — Pipeline LLM stage tests
 # ══════════════════════════════════════════════════════════════════════════
 
+@_PATCH_VERIFY
 @override_settings(LLM_ENABLE=False)
 class PipelineLLMDisabledTests(TestCase):
     """When LLM is disabled, pipeline must still work but with empty explainable_ai."""
@@ -164,6 +434,7 @@ class PipelineLLMDisabledTests(TestCase):
         self.assertIn("llm_error", ctx)
 
 
+@_PATCH_VERIFY
 class PipelineLLMEnabledTests(TestCase):
     """
     When LLM is enabled and Ollama is running, pipeline should get
@@ -197,6 +468,7 @@ class PipelineLLMEnabledTests(TestCase):
         self.assertGreaterEqual(ctx["llm_latency_ms"], 0)
 
 
+@_PATCH_VERIFY
 class OllamaUnavailableTests(TestCase):
     """
     When Ollama is unreachable, pipeline must set llm_status='error'
@@ -244,6 +516,7 @@ class OllamaUnavailableTests(TestCase):
 #  Phase 6 — API integration with LLM fields
 # ══════════════════════════════════════════════════════════════════════════
 
+@_PATCH_VERIFY
 @override_settings(LLM_ENABLE=False)
 class SubmitAnalysisWithLLMFieldsTests(TestCase):
     """API response must include all Phase 6 LLM fields."""

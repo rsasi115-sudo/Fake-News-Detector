@@ -21,9 +21,9 @@ const metrics = [
   },
   {
     icon: Clock,
-    value: "< 30s",
+    value: "≈ 40s",
     label: "Average Analysis Time",
-    description: "Lightning-fast results",
+    description: "Smooth staged verification",
     color: "text-accent",
     bgColor: "bg-accent/10",
   },

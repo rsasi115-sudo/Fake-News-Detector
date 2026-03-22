@@ -39,7 +39,7 @@ const mockReport = {
   // Full text with sentence-level highlights
   fullText: [
     { text: "Scientists have made an unprecedented discovery that could change medicine forever.", type: "sensational" as const },
-    { text: "A new element, temporarily named 'Healium', has shown remarkable properties in preliminary tests.", type: "unverified" as const },
+    { text: "A new element, temporarily named 'Healium', has shown remarkable properties in preliminary tests.", type: "vague" as const },
     { text: "Dr. John Smith, who wishes to remain anonymous, stated that this breakthrough will cure all known diseases.", type: "questionable" as const },
     { text: "The research was conducted at an undisclosed laboratory in Eastern Europe.", type: "vague" as const },
     { text: "Initial trials on mice showed 100% success rate with no side effects whatsoever.", type: "exaggerated" as const },
@@ -105,8 +105,6 @@ const getHighlightColor = (type: string) => {
   switch (type) {
     case "sensational":
       return "bg-destructive/20 border-destructive/40";
-    case "unverified":
-      return "bg-warning/20 border-warning/40";
     case "questionable":
       return "bg-destructive/15 border-destructive/30";
     case "vague":
@@ -126,8 +124,6 @@ const getHighlightLabel = (type: string) => {
   switch (type) {
     case "sensational":
       return { label: "Sensational", color: "text-destructive" };
-    case "unverified":
-      return { label: "Unverified", color: "text-warning" };
     case "questionable":
       return { label: "Questionable", color: "text-destructive" };
     case "vague":
@@ -269,7 +265,7 @@ const DetailedReport = () => {
                       </div>
                       <div className="flex items-center gap-2 text-sm">
                         <div className="w-3 h-3 rounded bg-warning/30" />
-                        <span>Unverified/Vague</span>
+                        <span>Vague/Unclear</span>
                       </div>
                       <div className="flex items-center gap-2 text-sm">
                         <div className="w-3 h-3 rounded bg-muted" />
@@ -639,7 +635,7 @@ const DetailedReport = () => {
               onClick={() => navigate("/")}
               className="gap-2"
             >
-              Check Another Article
+              Check Another Content
             </Button>
             <Button
               size="lg"

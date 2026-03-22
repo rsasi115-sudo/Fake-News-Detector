@@ -2,6 +2,24 @@ import { useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import { clearTokens } from "@/lib/auth";
 
+const STEP_PROGRESS_MS = {
+  submit: 4_000,
+  preprocess: 8_000,
+  extract: 8_000,
+  score: 10_000,
+  report: 10_000,
+} as const;
+
+const STEP_PROGRESS_RANGES = {
+  submit: [0, 10],
+  preprocess: [10, 30],
+  extract: [30, 50],
+  score: [50, 75],
+  report: [75, 99],
+} as const;
+
+const PROGRESS_TICK_MS = 150;
+
 export type VerificationStep = {
   id: string;
   label: string;
@@ -15,7 +33,7 @@ export type TrustedSource = {
   url: string;
   found: boolean;
   matchScore: number;
-  reportType: "confirms" | "disputes" | "unrelated" | "not_found";
+  reportType: "confirms" | "disputes" | "not_found";
   snippet?: string;
 };
 
@@ -27,10 +45,37 @@ export type ExplainableAI = {
   confidence: number;
 };
 
+export type SourceVerificationData = {
+  verificationEnabled: boolean;
+  verificationStatus: string;
+  matchedSources: Array<{
+    sourceName: string;
+    domain: string;
+    similarityScore: number;
+    matchedHeadline: string;
+    matchedEntities: string[];
+    status: string;
+    note: string;
+    isDomainMatch?: boolean;
+  }>;
+  perSourceStatuses: Array<{
+    sourceName: string;
+    status: string;
+    note: string;
+    similarityScore: number;
+  }>;
+  contradictionCount: number;
+  sourceCount: number;
+  verificationNotes: string;
+};
+
 export type AnalysisResult = {
-  verdict: "real" | "fake" | "misleading" | "unverified";
+  verdict: "real" | "fake" | "misleading";
   credibilityScore: number;
   explainableAI: ExplainableAI | null;
+  llmStatus?: string;
+  llmError?: string;
+  sourceVerificationData: SourceVerificationData;
   sourceVerification: {
     totalSourcesChecked: number;
     confirmingSources: number;
@@ -64,9 +109,11 @@ export type AnalysisResult = {
 export type AnalysisState = {
   isAnalyzing: boolean;
   currentStep: number;
+  progressPercent: number;
   steps: VerificationStep[];
   result: AnalysisResult | null;
   error: string | null;
+  streamId: string | null;
 };
 
 // ── Backend response types ──────────────────────────────────────────────
@@ -78,9 +125,34 @@ interface BackendSource {
   match_percentage: number;
 }
 
+interface BackendSourceVerification {
+  verification_enabled: boolean;
+  verification_status: string;
+  matched_sources: Array<{
+    source_name: string;
+    domain: string;
+    status: string;
+    note: string;
+    similarity_score: number;
+    matched_headline: string;
+    matched_entities: string[];
+    is_domain_match?: boolean;
+  }>;
+  per_source_statuses?: Array<{
+    source_name: string;
+    status: string;
+    note: string;
+    similarity_score: number;
+    is_domain_match?: boolean;
+  }>;
+  contradiction_count?: number;
+  source_count: number;
+  verification_notes: string;
+}
+
 interface BackendResult {
   id: number;
-  verdict: "true" | "false" | "misleading" | "unknown";
+  verdict: "true" | "false" | "misleading";
   credibility_score: number;
   metrics: Record<string, unknown>;
   llm_summary: string;
@@ -91,6 +163,7 @@ interface BackendResult {
   llm_error: string;
   created_at: string;
   sources: BackendSource[];
+  source_verification?: BackendSourceVerification;
 }
 
 interface BackendAnalysisResponse {
@@ -100,6 +173,7 @@ interface BackendAnalysisResponse {
   created_at: string;
   updated_at: string;
   result: BackendResult;
+  stream_id?: string;
 }
 
 // ── Mapping helpers ─────────────────────────────────────────────────────
@@ -110,8 +184,7 @@ const mapVerdict = (v: string): AnalysisResult["verdict"] => {
     case "true":       return "real";
     case "false":      return "fake";
     case "misleading": return "misleading";
-    case "unknown":    return "unverified";
-    default:           return "unverified";
+    default:           return "misleading";
   }
 };
 
@@ -232,10 +305,39 @@ const mapBackendToAnalysisResult = (data: BackendAnalysisResponse): AnalysisResu
           ? "balanced"
           : "neutral";
 
+  // Map source verification data from backend
+  const svRaw = r.source_verification;
+  const sourceVerificationData: SourceVerificationData = {
+    verificationEnabled: svRaw?.verification_enabled ?? false,
+    verificationStatus: svRaw?.verification_status ?? "unsupported",
+    matchedSources: (svRaw?.matched_sources ?? []).map((m) => ({
+      sourceName: m.source_name,
+      domain: m.domain,
+      similarityScore: m.similarity_score ?? 0,
+      matchedHeadline: m.matched_headline ?? "",
+      matchedEntities: m.matched_entities ?? [],
+      note: m.note ?? "",
+      status: m.status ?? "not_matched",
+      isDomainMatch: m.is_domain_match ?? false,
+    })),
+    perSourceStatuses: (svRaw?.per_source_statuses ?? []).map((p) => ({
+      sourceName: p.source_name,
+      status: p.status,
+      note: p.note ?? "",
+      similarityScore: p.similarity_score ?? 0,
+    })),
+    contradictionCount: svRaw?.contradiction_count ?? 0,
+    sourceCount: svRaw?.source_count ?? 0,
+    verificationNotes: svRaw?.verification_notes ?? "",
+  };
+
   return {
     verdict: mapVerdict(r.verdict),
     credibilityScore: score,
     explainableAI,
+    llmStatus: r.llm_status,
+    llmError: r.llm_error,
+    sourceVerificationData,
     sourceVerification: {
       totalSourcesChecked: trustedSources.length,
       confirmingSources: confirming,
@@ -270,9 +372,11 @@ export const useNewsAnalysis = () => {
   const [state, setState] = useState<AnalysisState>({
     isAnalyzing: false,
     currentStep: 0,
+    progressPercent: 0,
     steps: [],
     result: null,
     error: null,
+    streamId: null,
   });
 
   const setResult = useCallback((result: AnalysisResult) => {
@@ -280,6 +384,7 @@ export const useNewsAnalysis = () => {
       ...prev,
       result,
       isAnalyzing: false,
+      progressPercent: 100,
     }));
   }, []);
 
@@ -301,6 +406,42 @@ export const useNewsAnalysis = () => {
     }));
   };
 
+  const setProgressPercent = (progressPercent: number) => {
+    setState((prev) => ({
+      ...prev,
+      progressPercent,
+    }));
+  };
+
+  const animateProgress = async (start: number, end: number, durationMs: number) => {
+    if (durationMs <= 0) {
+      setProgressPercent(end);
+      return;
+    }
+
+    const startedAt = performance.now();
+
+    await new Promise<void>((resolve) => {
+      const tick = () => {
+        const elapsed = performance.now() - startedAt;
+        const ratio = Math.min(elapsed / durationMs, 1);
+        const eased = 1 - Math.pow(1 - ratio, 2);
+        const current = start + (end - start) * eased;
+
+        setProgressPercent(current);
+
+        if (ratio < 1) {
+          window.setTimeout(tick, PROGRESS_TICK_MS);
+          return;
+        }
+
+        resolve();
+      };
+
+      tick();
+    });
+  };
+
   const analyze = useCallback(async (content: string) => {
     // ── guard: must be logged in ──────────────────────────────────
     const token = localStorage.getItem("truthlens_access_token");
@@ -314,17 +455,24 @@ export const useNewsAnalysis = () => {
       return null;
     }
 
+    const generatedStreamId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
     const steps = initializeSteps();
     setState({
       isAnalyzing: true,
       currentStep: 0,
+      progressPercent: 0,
       steps,
       result: null,
       error: null,
+      streamId: generatedStreamId,
     });
 
     const inputType = detectInputType(content);
-    const payload = { input_type: inputType, input_value: content.trim() };
+    const payload = { input_type: inputType, input_value: content.trim(), stream_id: generatedStreamId };
 
     console.log("[TruthLens] Submitting analysis:", { url: "/analysis/submit/", method: "POST", payload });
 
@@ -332,7 +480,49 @@ export const useNewsAnalysis = () => {
     updateStep(0, { status: "active", details: "Sending to backend…" });
 
     try {
-      const res = await api.post<BackendAnalysisResponse>("/analysis/submit/", payload);
+      const responsePromise = api.post<BackendAnalysisResponse>("/analysis/submit/", payload);
+
+      const progressPromise = (async () => {
+        await animateProgress(
+          STEP_PROGRESS_RANGES.submit[0],
+          STEP_PROGRESS_RANGES.submit[1],
+          STEP_PROGRESS_MS.submit,
+        );
+        updateStep(0, { status: "completed", details: "Submitted successfully" });
+
+        updateStep(1, { status: "active", details: "Cleaning, normalising, and structuring text…" });
+        await animateProgress(
+          STEP_PROGRESS_RANGES.preprocess[0],
+          STEP_PROGRESS_RANGES.preprocess[1],
+          STEP_PROGRESS_MS.preprocess,
+        );
+        updateStep(1, { status: "completed", details: "Preprocessing complete" });
+
+        updateStep(2, { status: "active", details: "Detecting entities, claims, keywords, and risk signals…" });
+        await animateProgress(
+          STEP_PROGRESS_RANGES.extract[0],
+          STEP_PROGRESS_RANGES.extract[1],
+          STEP_PROGRESS_MS.extract,
+        );
+        updateStep(2, { status: "completed", details: "Feature extraction complete" });
+
+        updateStep(3, { status: "active", details: "Applying scoring rules and weighting source signals…" });
+        await animateProgress(
+          STEP_PROGRESS_RANGES.score[0],
+          STEP_PROGRESS_RANGES.score[1],
+          STEP_PROGRESS_MS.score,
+        );
+        updateStep(3, { status: "completed", details: "Credibility score computed" });
+
+        updateStep(4, { status: "active", details: "Compiling findings into the final verification report…" });
+        await animateProgress(
+          STEP_PROGRESS_RANGES.report[0],
+          STEP_PROGRESS_RANGES.report[1],
+          STEP_PROGRESS_MS.report,
+        );
+      })();
+
+      const [res] = await Promise.all([responsePromise, progressPromise]);
 
       console.log("[TruthLens] Response:", { success: res.success, data: res.data, error: res.error });
 
@@ -345,7 +535,6 @@ export const useNewsAnalysis = () => {
           isAnalyzing: false,
           error: "Session expired. Please log in again.",
         }));
-        // Redirect to login
         window.location.href = "/auth";
         return null;
       }
@@ -353,32 +542,20 @@ export const useNewsAnalysis = () => {
       if (!res.success) {
         const msg = res.error?.message ?? "Analysis request failed.";
         console.error("[TruthLens] API error:", msg);
-        updateStep(0, { status: "error", details: msg });
+        updateStep(4, { status: "error", details: msg });
         setState((prev) => ({ ...prev, isAnalyzing: false, error: msg }));
         return null;
       }
 
-      // ── success — walk through steps for visual feedback ──────────
-      updateStep(0, { status: "completed", details: "Submitted successfully" });
-
-      updateStep(1, { status: "active", details: "Cleaning & normalising text…" });
-      await new Promise((r) => setTimeout(r, 400));
-      updateStep(1, { status: "completed", details: "Preprocessing done" });
-
-      updateStep(2, { status: "active", details: "Detecting keywords, claims & patterns…" });
-      await new Promise((r) => setTimeout(r, 400));
-      updateStep(2, { status: "completed", details: "Feature extraction complete" });
-
-      updateStep(3, { status: "active", details: "Applying rule-based scoring…" });
-      await new Promise((r) => setTimeout(r, 400));
-      updateStep(3, { status: "completed", details: "Score computed" });
-
-      updateStep(4, { status: "active", details: "Assembling report…" });
-      await new Promise((r) => setTimeout(r, 300));
-
       // Map backend response → frontend AnalysisResult
-      const analysisResult = mapBackendToAnalysisResult(res.data!);
+      if (!res.data?.result) {
+        throw new Error("Backend returned an empty analysis payload.");
+      }
 
+      const analysisResult = mapBackendToAnalysisResult(res.data);
+      const streamId = res.data.stream_id || generatedStreamId;
+
+      setProgressPercent(100);
       updateStep(4, {
         status: "completed",
         details: "Report ready",
@@ -388,7 +565,9 @@ export const useNewsAnalysis = () => {
       setState((prev) => ({
         ...prev,
         isAnalyzing: false,
+        progressPercent: 100,
         result: analysisResult,
+        streamId,
       }));
 
       console.log("[TruthLens] Analysis complete:", {
@@ -403,6 +582,7 @@ export const useNewsAnalysis = () => {
       setState((prev) => ({
         ...prev,
         isAnalyzing: false,
+        progressPercent: 0,
         error: err instanceof Error ? err.message : "Network error — is the backend running?",
       }));
       return null;
@@ -413,9 +593,11 @@ export const useNewsAnalysis = () => {
     setState({
       isAnalyzing: false,
       currentStep: 0,
+      progressPercent: 0,
       steps: [],
       result: null,
       error: null,
+      streamId: null,
     });
   }, []);
 

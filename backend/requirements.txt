@@ -4,3 +4,7 @@ djangorestframework-simplejwt
 django-cors-headers
 python-dotenv
 requests
+beautifulsoup4
+channels
+daphne
+channels-redis

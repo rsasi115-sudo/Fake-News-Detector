@@ -27,6 +27,7 @@ const newsItems = [
     source: "National Tribune",
     time: "2 hours ago",
     verified: null,
+    url: "https://www.reuters.com/technology/",
   },
   {
     id: 2,
@@ -35,6 +36,7 @@ const newsItems = [
     source: "Sports Daily",
     time: "3 hours ago",
     verified: true,
+    url: "https://www.bbc.com/sport",
   },
   {
     id: 3,
@@ -43,6 +45,7 @@ const newsItems = [
     source: "Entertainment Weekly",
     time: "4 hours ago",
     verified: null,
+    url: "https://www.bbc.com/culture",
   },
   {
     id: 4,
@@ -51,6 +54,7 @@ const newsItems = [
     source: "Financial Times",
     time: "5 hours ago",
     verified: true,
+    url: "https://www.reuters.com/business/",
   },
   {
     id: 5,
@@ -59,6 +63,7 @@ const newsItems = [
     source: "Health Journal",
     time: "6 hours ago",
     verified: null,
+    url: "https://www.bbc.com/future",
   },
   {
     id: 6,
@@ -67,6 +72,7 @@ const newsItems = [
     source: "Political Watch",
     time: "7 hours ago",
     verified: null,
+    url: "https://apnews.com/politics",
   },
 ];
 
@@ -149,8 +155,20 @@ const RealTimeNews = () => {
                       <span>{item.source}</span>
                       <span>{item.time}</span>
                     </div>
+                    {/* Opens the original article source in a new tab */}
                     <div className="flex justify-end">
-                      <Button variant="outline" size="sm" className="gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-2"
+                        disabled={!item.url}
+                        title={item.url ? "Open full article" : "No article link available"}
+                        onClick={() => {
+                          if (item.url) {
+                            window.open(item.url, "_blank", "noopener,noreferrer");
+                          }
+                        }}
+                      >
                         <ExternalLink className="w-4 h-4" />
                         Read More
                       </Button>

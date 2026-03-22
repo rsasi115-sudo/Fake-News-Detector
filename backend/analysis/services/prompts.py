@@ -12,7 +12,7 @@ from typing import Any
 
 # ── maximum input length sent to the LLM ─────────────────────────────────
 
-MAX_INPUT_CHARS = 4_000
+MAX_INPUT_CHARS = 1_000
 
 # ── prompt-injection guard phrases ───────────────────────────────────────
 
@@ -80,24 +80,22 @@ def sanitize_input(text: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = """\
-You are TruthLens AI, a specialised misinformation-detection assistant.
+You are TruthLens AI, a misinformation-detection assistant.
 
-INSTRUCTIONS
-- Analyse the provided news text / URL and the NLP pipeline metrics.
-- Produce ONLY a single JSON object (no markdown, no explanation outside it).
-- The JSON object MUST contain these keys:
+Analyse the content and NLP metrics below. Produce ONLY a single JSON object with these keys:
 
-  "summary"          : string  — a 2-4 sentence overall verdict explanation.
-  "reasoning"        : array of strings — 3-6 bullet-point reasoning steps.
-  "inconsistencies"  : array of strings — 0-5 inconsistencies found (empty list if none).
-  "recommendations"  : array of strings — 2-4 actionable recommendations for the reader.
-  "confidence"       : number  — your confidence between 0.0 and 1.0.
+  "summary"          : string  — 2-3 sentence verdict explanation.
+  "reasoning"        : array of strings — 3-5 reasoning steps.
+  "inconsistencies"  : array of strings — 0-5 inconsistencies (empty list if none).
+  "recommendations"  : array of strings — 2-4 actionable recommendations.
+  "confidence"       : number  — 0.0 to 1.0.
 
-HARD RULES
-- Do NOT output anything outside the JSON object.
-- Do NOT wrap the JSON in markdown code-fences.
-- Keep all strings concise (< 200 chars each).
-- If you are unsure, say so honestly in the summary and set confidence ≤ 0.4.
+RULES: No markdown, no text outside the JSON. Keep strings under 150 chars. If unsure, set confidence ≤ 0.4.
+If a submitted URL belongs to a trusted source domain, explicitly say that this increases credibility.
+If the final verdict is still misleading or false despite a trusted-domain match, explain that content-based warning signals reduced the score.
+If no trusted-source match exists, state that the final score relies on content-based analysis.
+Do not use harsh phrases (e.g., misinformation, clickbait, unverifiable, do not share) unless strong negative evidence is present.
+Do not use awkward phrasing like "partially supports the article's credibility".
 """
 
 
@@ -138,20 +136,74 @@ def build_user_prompt(payload: dict[str, Any]) -> str:
             metric_lines.append(f"  {key}: {val}")
     metrics_block = "\n".join(metric_lines) if metric_lines else "  (no metrics available)"
 
-    sources = payload.get("source_checks") or payload.get("sources") or []
+    sv = payload.get("source_verification") or {}
+    per_source = sv.get("per_source_statuses") or []
     source_lines: list[str] = []
-    for src in sources[:8]:
-        source_name = src.get("source_name", "unknown")
-        source_status = src.get("verification_status", "unknown")
-        match_pct = src.get("match_percentage", "?")
-        source_lines.append(f"  - {source_name}: {source_status} ({match_pct}%)")
+    for src in per_source[:8]:
+      source_name = src.get("source_name", "unknown")
+      source_status = src.get("status", "not_matched")
+      source_note = src.get("note", "")
+      source_lines.append(f"  - {source_name}: {source_status}. {source_note}")
     sources_block = "\n".join(source_lines) if source_lines else "  (no source checks available)"
 
     recommendations = payload.get("recommendations") or []
     recs_block = "\n".join(f"  - {r}" for r in recommendations[:6]) if recommendations else "  (none)"
 
+    # Source verification results
+    sv_status = sv.get("verification_status", "not_available")
+    sv_notes = sv.get("verification_notes", "")
+    sv_matched = sv.get("matched_sources") or []
+    
+    # Build matched sources description with domain-match indicators
+    matched_descriptions: list[str] = []
+    for m in sv_matched:
+        source_name = m.get("source_name", "unknown")
+        is_domain_match = m.get("is_domain_match", False)
+        if is_domain_match:
+            matched_descriptions.append(f"{source_name} (submitted URL is from this trusted domain)")
+        else:
+            matched_descriptions.append(f"{source_name} (article matched via content similarity)")
+    
+    sv_source_names = ", ".join(matched_descriptions) if matched_descriptions else "(none)"
+    verification_block = (
+        f"  status: {sv_status}\n"
+        f"  matched_sources: {sv_source_names}\n"
+        f"  notes: {sv_notes}"
+    )
+
+    explanation_guidance = ""
+    source_scoring = payload.get("source_scoring") or {}
+    trusted_match_count = int(source_scoring.get("trusted_match_count", 0) or 0)
+    negative_indicator_count = int(source_scoring.get("negative_indicator_count", 0) or 0)
+    severe_negative_signals = bool(source_scoring.get("severe_negative_signals", False))
+    domain_match_names = [m.get("source_name", "") for m in sv_matched if m.get("is_domain_match")]
+
+    if trusted_match_count > 0 and domain_match_names:
+      primary_source = domain_match_names[0]
+      explanation_guidance = (
+        f"\nEXPLANATION GUIDANCE:\n"
+        f"  - State clearly: The submitted article comes from {primary_source}, a trusted source, which significantly increases credibility.\n"
+      )
+      if negative_indicator_count == 0:
+        explanation_guidance += (
+          "  - Reinforce that no strong warning signals were detected, so the trusted-source match keeps confidence high.\n"
+        )
+      elif severe_negative_signals:
+        explanation_guidance += (
+          "  - Explain that severe content-based warning signals were strong enough to reduce the score despite the trusted source.\n"
+        )
+      else:
+        explanation_guidance += (
+          "  - Explain that some content-based warning signals lowered confidence, but the trusted source keeps the score from dropping too far.\n"
+        )
+    elif trusted_match_count == 0:
+      explanation_guidance = (
+        "\nEXPLANATION GUIDANCE:\n"
+        "  - State clearly: No trusted-source match was found, so the final score relies on content-based analysis.\n"
+      )
+
     return f"""\
-INPUT TEXT:
+INPUT CONTENT:
 \"\"\"
 {cleaned_text}
 \"\"\"
@@ -163,8 +215,11 @@ NLP PIPELINE RESULTS:
 {metrics_block}
   sources:
 {sources_block}
+  source_verification:
+{verification_block}
   recommendations:
 {recs_block}
+{explanation_guidance}
 
-Based on the above, produce the JSON analysis now.
+Based on the above content and metrics, produce the JSON analysis now.
 """

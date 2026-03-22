@@ -5,7 +5,7 @@ const steps = [
   {
     icon: FileText,
     title: "Submit Content",
-    description: "Paste a URL, upload an article, or enter text directly into our analyzer.",
+    description: "Paste a URL or enter text directly into our analyzer.",
     color: "bg-primary",
   },
   {

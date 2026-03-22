@@ -34,6 +34,9 @@ ALLOWED_HOSTS: list[str] = [
 # Application definition
 # ---------------------------------------------------------------------------
 INSTALLED_APPS = [
+    # ASGI / WebSocket
+    "daphne",
+    "channels",
     # Django built-ins
     "django.contrib.admin",
     "django.contrib.auth",
@@ -62,6 +65,8 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "config.urls"
 
+ASGI_APPLICATION = "config.asgi.application"
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -78,6 +83,14 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
+
+# In-memory channel layer is enough for local development.
+# For production, switch to channels_redis.
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Database  (SQLite for development)
@@ -181,22 +194,36 @@ LOGGING = {
             "format": "{levelname} {asctime} {module} {message}",
             "style": "{",
         },
+        "websocket": {
+            "format": "[{levelname}] {name}: {message}",
+            "style": "{",
+        },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "verbose",
         },
+        "websocket": {
+            "class": "analysis.services.log_streamer.WebSocketLogHandler",
+            "formatter": "websocket",
+            "level": "INFO",
+        },
     },
     "root": {
-        "handlers": ["console"],
+        "handlers": ["console", "websocket"],
         "level": "INFO",
     },
     "loggers": {
         "django": {
-            "handlers": ["console"],
+            "handlers": ["console", "websocket"],
             "level": "INFO",
             "propagate": False,
+        },
+        # Keep analysis logs single-emission via root handlers.
+        "analysis": {
+            "level": "INFO",
+            "propagate": True,
         },
     },
 }

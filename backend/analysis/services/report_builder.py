@@ -16,28 +16,16 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════════
 
 _VERDICT_LABELS: dict[str, str] = {
-    "true": "Likely True",
-    "false": "Likely Fake",
-    "misleading": "Misleading / Partially False",
-    "unknown": "Uncertain — Needs More Verification",
+    "true": "Credible",
+    "false": "Fake",
+    "misleading": "Potentially Misleading",
 }
 
 _VERDICT_EMOJI: dict[str, str] = {
     "true": "✅",
     "false": "🚫",
     "misleading": "⚠️",
-    "unknown": "❓",
 }
-
-# ── deterministic source pool ────────────────────────────────────────────
-
-_SOURCE_POOL: list[dict[str, Any]] = [
-    {"name": "Reuters Fact-Check",  "min_score": 55, "status_if_match": "verified",  "status_else": "not_found"},
-    {"name": "AP News",             "min_score": 65, "status_if_match": "verified",  "status_else": "not_found"},
-    {"name": "PolitiFact",          "min_score": 0,  "status_if_match": "verified",  "status_else": "disputed"},
-    {"name": "Snopes",              "min_score": 45, "status_if_match": "verified",  "status_else": "disputed"},
-    {"name": "Full Fact",           "min_score": 35, "status_if_match": "verified",  "status_else": "not_found"},
-]
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -151,16 +139,13 @@ def _generate_recommendations(ctx: dict) -> list[str]:
     elif verdict == "misleading":
         recs.append("This content contains misleading elements. Verify key claims independently.")
         recs.append("Look for the original source or official statements before sharing.")
-    elif verdict == "unknown":
-        recs.append("Insufficient signals to determine reliability. Seek additional sources.")
-        recs.append("Check whether established news outlets have covered this story.")
     else:
         recs.append("This content appears credible based on available signals.")
         recs.append("Always verify critical decisions with multiple independent sources.")
 
     # ── signal-specific tips ─────────────────────────────────────────
     if features["clickbait_hits"]:
-        recs.append("Be cautious of sensationalised headlines — read the full article.")
+        recs.append("Be cautious of sensationalised headlines — read the full content carefully.")
     if features.get("absolute_hits"):
         recs.append("Claims using absolute language ('always', 'never', 'proven') deserve extra scrutiny.")
     if features.get("claims"):
@@ -177,28 +162,26 @@ def _generate_recommendations(ctx: dict) -> list[str]:
 
 def _build_source_checks(ctx: dict) -> list[dict[str, Any]]:
     """
-    Deterministic source-check generation based on score.
-
-    Each source "matches" if the credibility score is above its min_score
-    threshold. Match percentage is derived from the credibility score
-    (fully deterministic — no randomness).
+    Build source checks from the real trusted-source verification stage.
     """
-    score = ctx["credibility_score"]
+    sv = ctx.get("source_verification", {}) or {}
+    per_source = sv.get("per_source_statuses") or []
     sources: list[dict[str, Any]] = []
 
-    for src in _SOURCE_POOL:
-        if score >= src["min_score"]:
-            status = src["status_if_match"]
-            match_pct = min(score + 5, 98)
-        else:
-            status = src["status_else"]
-            match_pct = max(score - 10, 5)
-
-        sources.append({
-            "source_name": src["name"],
-            "verification_status": status,
-            "match_percentage": match_pct,
-        })
+    if per_source:
+        for src in per_source:
+            status_map = {
+                "matched": "verified",
+                "partial": "not_found",
+                "contradicted": "disputed",
+                "not_matched": "not_found",
+            }
+            raw_status = str(src.get("status") or "not_matched")
+            sources.append({
+                "source_name": src.get("source_name", "Unknown"),
+                "verification_status": status_map.get(raw_status, "not_found"),
+                "match_percentage": int(round(float(src.get("similarity_score", 0.0)) * 100)),
+            })
 
     return sources
 

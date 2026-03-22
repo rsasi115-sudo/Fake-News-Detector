@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { 
   Shield, Brain, FileText, Image, Video, Mic, 
-  Link, Users, GraduationCap, Newspaper, Search,
+  Link, Search,
   Scale, CheckCircle2
 } from "lucide-react";
 
@@ -36,24 +36,6 @@ const AboutSection = () => {
       icon: Scale,
       title: "Bias Detection",
       description: "Identify political, emotional, and commercial bias in content presentation and framing."
-    }
-  ];
-
-  const targetUsers = [
-    {
-      icon: GraduationCap,
-      title: "Students & Researchers",
-      description: "Verify sources for academic papers and research projects with confidence."
-    },
-    {
-      icon: Newspaper,
-      title: "Journalists & Media",
-      description: "Fact-check stories and sources before publication to maintain credibility."
-    },
-    {
-      icon: Users,
-      title: "General Public",
-      description: "Make informed decisions about the news and information you consume daily."
     }
   ];
 
@@ -175,34 +157,6 @@ const AboutSection = () => {
           </div>
         </motion.div>
 
-        {/* Target Users */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-        >
-          <h3 className="text-2xl font-bold font-display text-center mb-8">
-            Who We Serve
-          </h3>
-          <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
-            {targetUsers.map((user, index) => (
-              <motion.div
-                key={user.title}
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ delay: index * 0.1 }}
-                className="text-center p-8 rounded-2xl gradient-glass border border-border/50 shadow-soft"
-              >
-                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-secondary/20 to-accent/20 flex items-center justify-center mx-auto mb-4">
-                  <user.icon className="w-8 h-8 text-secondary" />
-                </div>
-                <h4 className="text-lg font-semibold mb-2">{user.title}</h4>
-                <p className="text-sm text-muted-foreground">{user.description}</p>
-              </motion.div>
-            ))}
-          </div>
-        </motion.div>
       </div>
     </section>
   );

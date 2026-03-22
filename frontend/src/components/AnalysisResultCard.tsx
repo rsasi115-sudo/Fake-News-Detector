@@ -23,7 +23,7 @@ const verdictConfig = {
     bgColor: "bg-success/10",
     borderColor: "border-success/30",
     badgeVariant: "default" as const,
-    label: "Credible News",
+    label: "Credible",
     description: "This content appears to be authentic and from reliable sources.",
   },
   fake: {
@@ -32,7 +32,7 @@ const verdictConfig = {
     bgColor: "bg-destructive/10",
     borderColor: "border-destructive/30",
     badgeVariant: "destructive" as const,
-    label: "Fake News Detected",
+    label: "Fake",
     description: "This content shows significant credibility issues.",
   },
   misleading: {
@@ -44,22 +44,12 @@ const verdictConfig = {
     label: "Potentially Misleading",
     description: "This content may contain inaccuracies or missing context.",
   },
-  unverified: {
-    icon: HelpCircle,
-    color: "text-muted-foreground",
-    bgColor: "bg-muted/10",
-    borderColor: "border-muted/30",
-    badgeVariant: "outline" as const,
-    label: "Unverified",
-    description: "Unable to definitively verify this content.",
-  },
 };
 
 const SourceItem = ({ source }: { source: TrustedSource }) => {
   const reportTypeConfig = {
     confirms: { icon: CheckCircle, color: "text-success", label: "Confirms" },
     disputes: { icon: XCircle, color: "text-destructive", label: "Disputes" },
-    unrelated: { icon: AlertTriangle, color: "text-warning", label: "Related" },
     not_found: { icon: HelpCircle, color: "text-muted-foreground", label: "Not Found" },
   };
 
@@ -81,9 +71,7 @@ const SourceItem = ({ source }: { source: TrustedSource }) => {
             {config.label}
           </Badge>
           {source.matchScore > 0 && (
-            <span className="text-xs text-muted-foreground">
-              {source.matchScore}% match
-            </span>
+            <span className="text-xs text-muted-foreground">source matched</span>
           )}
         </div>
         {source.snippet && (

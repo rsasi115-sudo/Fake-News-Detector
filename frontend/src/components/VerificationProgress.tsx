@@ -5,17 +5,18 @@ import type { VerificationStep } from "@/hooks/useNewsAnalysis";
 type VerificationProgressProps = {
   steps: VerificationStep[];
   currentStep: number;
+  progressPercent: number;
 };
 
 const stepIcons: Record<string, typeof Search> = {
-  search: Search,
-  verify: Shield,
-  crossref: Database,
-  analyze: Brain,
-  compile: FileCheck,
+  submit: Shield,
+  preprocess: Search,
+  extract: Database,
+  score: Brain,
+  report: FileCheck,
 };
 
-const VerificationProgress = ({ steps, currentStep }: VerificationProgressProps) => {
+const VerificationProgress = ({ steps, currentStep, progressPercent }: VerificationProgressProps) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -162,14 +163,14 @@ const VerificationProgress = ({ steps, currentStep }: VerificationProgressProps)
           <div className="flex items-center justify-between text-sm mb-2">
             <span className="text-muted-foreground">Overall Progress</span>
             <span className="font-medium text-foreground">
-              {Math.round(((currentStep + 1) / steps.length) * 100)}%
+              {Math.round(progressPercent)}%
             </span>
           </div>
           <div className="h-2 bg-muted rounded-full overflow-hidden">
             <motion.div
               className="h-full bg-gradient-to-r from-secondary to-accent rounded-full"
               initial={{ width: 0 }}
-              animate={{ width: `${((currentStep + 1) / steps.length) * 100}%` }}
+              animate={{ width: `${progressPercent}%` }}
               transition={{ duration: 0.5, ease: "easeOut" }}
             />
           </div>

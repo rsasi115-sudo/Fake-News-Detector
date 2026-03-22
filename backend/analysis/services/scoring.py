@@ -21,10 +21,9 @@ def _clamp(value: int, lo: int = 0, hi: int = 100) -> int:
 # ══════════════════════════════════════════════════════════════════════════
 
 _VERDICT_THRESHOLDS: list[tuple[int, str]] = [
-    (30, "false"),        # 0  – 30
-    (50, "misleading"),   # 31 – 50
-    (70, "unknown"),      # 51 – 70
-    (100, "true"),        # 71 – 100
+    (34, "false"),        # 0  – 34   → Fake
+    (64, "misleading"),   # 35 – 64   → Potentially Misleading
+    (100, "true"),        # 65 – 100  → Credible
 ]
 
 
@@ -33,7 +32,7 @@ def _score_to_verdict(score: int) -> str:
     for threshold, verdict in _VERDICT_THRESHOLDS:
         if score <= threshold:
             return verdict
-    return "unknown"  # fallback
+    return "misleading"  # fallback guard
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -248,7 +247,7 @@ def compute_score(ctx: dict) -> dict:
 
     Adds to ``ctx``:
       - ``credibility_score``  (int 0–100)
-      - ``verdict``            ("true" | "false" | "misleading" | "unknown")
+            - ``verdict``            ("true" | "false" | "misleading")
       - ``scoring_breakdown``  (list of rule applications for transparency)
     """
 

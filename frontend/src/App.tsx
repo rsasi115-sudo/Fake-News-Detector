@@ -11,6 +11,7 @@ import Auth from "./pages/Auth";
 import AnalysisResults from "./pages/AnalysisResults";
 import DetailedReport from "./pages/DetailedReport";
 import Settings from "./pages/Settings";
+import ScanningPage from "./pages/ScanningPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -30,6 +31,7 @@ const App = () => (
               <Route path="/results" element={<AnalysisResults />} />
               <Route path="/report" element={<DetailedReport />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/scanning" element={<ScanningPage />} />
               {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
               <Route path="*" element={<NotFound />} />
             </Routes>
